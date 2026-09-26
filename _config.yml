@@ -1,0 +1,23 @@
+title: Christoph Sens
+description: Notes on Kotlin, Java and AWS from a freelance developer and consultant.
+url: https://christoph-sens.github.io
+author:
+  name: Christoph Sens
+theme: minima
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+  - jekyll-sitemap
+permalink: /:year/:month/:title/
+markdown: kramdown
+kramdown:
+  input: GFM
+github_username: christoph-sens
+defaults:
+  - scope:
+      path: ""
+      type: posts
+    values:
+      layout: post
+header_pages:
+  - about.md
