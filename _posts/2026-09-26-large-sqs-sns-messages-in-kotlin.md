@@ -23,8 +23,7 @@ Maven Central:
 - [snsoverflow](https://github.com/christoph-sens/snsoverflow): an `SnsClient` that offloads large message bodies
 - [s3overflow](https://github.com/christoph-sens/s3overflow): the payload store underneath (S3 upload, pointer, download, delete)
 
-This post covers how they work, how they differ from the Java libraries, and what to know if you
-move a Kotlin service over from the Java libraries.
+This post covers how they work and how they differ from the Java libraries.
 
 ## What the size limits are today
 
@@ -127,37 +126,21 @@ Jackson. Fewer transitive dependencies means fewer libraries to keep patched. De
 remaining dependencies current, and CodeQL and dependency review run on every pull request in all
 three repositories.
 
-## Coming from the Java libraries
+## Differences from the Java libraries
 
-For Java services, the AWS libraries remain the natural choice. This section is for Kotlin services
-that use them through the Java SDK today and want to move to aws-sdk-kotlin.
+For Java services, the AWS libraries remain the natural choice. If you compare the two, or run a
+Kotlin service that uses the Java libraries through the Java SDK today, these are the differences
+that matter.
 
-The important caveat first: **sqsoverflow and snsoverflow are not wire-compatible with the Java
-libraries.** The pointer JSON and the receipt-handle format differ. A message sent by the Java
-extended client cannot be resolved by sqsoverflow, and vice versa. Switch all producers and
-consumers of a queue at the same time, or drain the queue first.
+**sqsoverflow and snsoverflow are not wire-compatible with the Java libraries.** The pointer JSON
+and the receipt-handle format differ. A message sent by the Java extended client cannot be resolved
+by sqsoverflow, and vice versa, so all producers and consumers of a queue or topic have to use the
+same libraries. Switching means switching all of them at once, or draining the queue first.
 
 The `ExtendedPayloadSize` attribute name is the same, so SNS-to-SQS fan-out works between
 snsoverflow and sqsoverflow.
 
-Before (Java SDK):
-
-```java
-ExtendedClientConfiguration config = new ExtendedClientConfiguration()
-    .withPayloadSupportEnabled(s3Client, "my-payload-bucket");
-SqsClient client = new AmazonSQSExtendedClient(SqsClient.builder().build(), config);
-```
-
-After (aws-sdk-kotlin):
-
-```kotlin
-val client = SqsExtendedClient(
-    SqsClient.fromEnvironment(),
-    SqsExtendedClientConfig(payloadStore = S3BackedPayloadStore(s3Client, bucketName = "my-payload-bucket")),
-)
-```
-
-Options without an equivalent:
+Options without a direct equivalent:
 
 | Java option | In the Kotlin clients |
 |---|---|
