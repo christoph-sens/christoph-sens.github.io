@@ -1,6 +1,6 @@
 ---
-title: "Large SQS and SNS messages in Kotlin: the extended client pattern without Java baggage"
-description: "The AWS Java extended client libraries for SQS and SNS pin old Jackson versions with known advisories. sqsoverflow and snsoverflow port them to aws-sdk-kotlin and coroutines, without Jackson."
+title: "Large SQS and SNS messages in Kotlin: an extended client for aws-sdk-kotlin"
+description: "AWS ships extended clients for large SQS and SNS messages only for Java. sqsoverflow and snsoverflow bring the pattern to aws-sdk-kotlin and coroutines, derived from the Java libraries but designed for Kotlin."
 date: 2026-09-26
 tags: [kotlin, aws, sqs, sns, s3, coroutines]
 image: /assets/images/overflow-social-preview.png
@@ -14,37 +14,17 @@ and [amazon-sns-java-extended-client-lib](https://github.com/awslabs/amazon-sns-
 both built on [payload-offloading-java-common-lib-for-aws](https://github.com/awslabs/payload-offloading-java-common-lib-for-aws).
 
 If your service is written in Kotlin on [aws-sdk-kotlin](https://github.com/awslabs/aws-sdk-kotlin),
-those libraries don't fit: they wrap the AWS SDK for Java v2 clients, not the Kotlin ones. So I
-ported them. The result is three small libraries on Maven Central:
+there is no such client: the Java libraries wrap the AWS SDK for Java v2 clients, not the Kotlin
+ones. So I built extended clients for aws-sdk-kotlin. They are derived from the Java libraries, but
+designed for Kotlin rather than translated line by line. The result is three small libraries on
+Maven Central:
 
-- [s3overflow](https://github.com/christoph-sens/s3overflow): the payload store (S3 upload, pointer, download, delete)
 - [sqsoverflow](https://github.com/christoph-sens/sqsoverflow): an `SqsClient` that offloads large message bodies
 - [snsoverflow](https://github.com/christoph-sens/snsoverflow): an `SnsClient` that offloads large message bodies
+- [s3overflow](https://github.com/christoph-sens/s3overflow): the payload store underneath (S3 upload, pointer, download, delete)
 
-This post covers why the Java libraries are a liability today, how the ports work, and what you
-need to know before migrating.
-
-## Where the Java libraries stand today
-
-The extended clients do their job, but their foundation has aged:
-
-- **Old dependencies with known advisories.** Both clients depend on
-  `payloadoffloading-common` 2.2.0, whose last release was in March 2024. It pins
-  `jackson-databind` 2.15.2 and `jackson-core` 2.16.0. As of September 2026, the GitHub Advisory
-  Database lists seven advisories affecting exactly these versions, three of them rated high,
-  among them bypasses of Jackson's polymorphic type validation and a denial-of-service issue in the
-  async parser. Even the latest SQS client release (2.1.3, July 2026) still pulls in these versions
-  through the common library.
-- **Java 8 bytecode and a pre-coroutine design.** All three libraries compile for Java 8 and keep
-  separate sync and async client classes with largely duplicated pass-through code.
-- **Slow release cadence.** The SNS client's latest release (2.1.0) is from March 2024, the common
-  library's from the same month.
-
-To be fair: whether an advisory is exploitable depends on how Jackson is used, and the extended
-clients only (de)serialize a small pointer object. You can also override the Jackson versions in
-your own build. But every dependency scanner flags these versions, someone has to triage the
-findings again and again, and forcing newer Jackson versions under a library that was never tested
-against them is its own risk. Removing Jackson from this code path makes the question disappear.
+This post covers how they work, how they differ from the Java libraries, and what to know if you
+move a Kotlin service over from the Java libraries.
 
 ## What the size limits are today
 
@@ -93,11 +73,11 @@ snsoverflow works the same way for `publish` and `publishBatch`. SNS has no rece
 subscriber resolves the pointer: for an SNS topic that fans out to an SQS queue with raw message
 delivery, that's sqsoverflow's `SqsExtendedClient`.
 
-## Why a port instead of a wrapper around the Java library
+## Designed for Kotlin
 
 ### One suspend API instead of sync and async classes
 
-The Java originals come in two flavors each, for example `AmazonSQSExtendedClient` for `SqsClient`
+The Java libraries come in two flavors each, for example `AmazonSQSExtendedClient` for `SqsClient`
 and `AmazonSQSExtendedAsyncClient` for `SqsAsyncClient`. aws-sdk-kotlin clients are `suspend`-based
 from the start, so one class covers both cases and fits naturally into coroutine code.
 
@@ -123,35 +103,44 @@ sqsoverflow overrides eight methods: `sendMessage`, `sendMessageBatch`, `receive
 to the wrapped client. All three libraries together are about 730 lines of Kotlin, license headers
 included.
 
-### No Jackson dependency
-
-The Java libraries serialize the S3 pointer with Jackson. The ports use kotlinx.serialization, so
-nothing in their runtime classpath is Jackson, and the advisories described above do not apply to
-them. Fewer transitive dependencies means fewer libraries to keep patched. Dependabot keeps the
-remaining dependencies current, and CodeQL and dependency review run on every pull request in all
-three repositories.
-
 ### Less configuration surface
 
-The original configuration classes carry options for client-side encryption strategies and canned
-ACLs. The ports take a `PayloadStore` and a handful of behavior flags (`payloadSizeThreshold`,
+The Java configuration classes carry options for client-side encryption strategies and canned
+ACLs. The Kotlin clients take a `PayloadStore` and a handful of behavior flags (`payloadSizeThreshold`,
 `alwaysThroughS3`, `cleanupS3Payload`, `ignorePayloadNotFound`, `s3KeyPrefix`). Encryption is
 configured where it belongs: on the bucket, with SSE-S3 or SSE-KMS.
 
 `publishBatch` in snsoverflow is offload-aware as well. The Java SNS library predates the SNS
 `PublishBatch` API and only handles `publish`.
 
-## Migrating from the Java libraries
+### No Jackson on the classpath
 
-The important caveat first: **the ports are not wire-compatible with the Java libraries.** The
-pointer JSON and the receipt-handle format differ. A message sent by the Java extended client cannot
-be resolved by sqsoverflow, and vice versa. Switch all producers and consumers of a queue at the
-same time, or drain the queue first.
+The Java libraries serialize the S3 pointer with Jackson, pulled in through `payloadoffloading-common`
+2.2.0 (March 2024), which pins `jackson-databind` 2.15.2 and `jackson-core` 2.16.0. As of September
+2026, the GitHub Advisory Database lists seven advisories affecting exactly these versions, three
+of them rated high. Whether any of them is exploitable depends on how Jackson is used, and the
+extended clients only (de)serialize a small pointer object; you can also override the versions in
+your own build. But dependency scanners flag them, and someone has to triage the findings.
+
+The Kotlin clients use kotlinx.serialization instead, so nothing in their runtime classpath is
+Jackson. Fewer transitive dependencies means fewer libraries to keep patched. Dependabot keeps the
+remaining dependencies current, and CodeQL and dependency review run on every pull request in all
+three repositories.
+
+## Coming from the Java libraries
+
+For Java services, the AWS libraries remain the natural choice. This section is for Kotlin services
+that use them through the Java SDK today and want to move to aws-sdk-kotlin.
+
+The important caveat first: **sqsoverflow and snsoverflow are not wire-compatible with the Java
+libraries.** The pointer JSON and the receipt-handle format differ. A message sent by the Java
+extended client cannot be resolved by sqsoverflow, and vice versa. Switch all producers and
+consumers of a queue at the same time, or drain the queue first.
 
 The `ExtendedPayloadSize` attribute name is the same, so SNS-to-SQS fan-out works between
 snsoverflow and sqsoverflow.
 
-Before (Java):
+Before (Java SDK):
 
 ```java
 ExtendedClientConfiguration config = new ExtendedClientConfiguration()
@@ -159,7 +148,7 @@ ExtendedClientConfiguration config = new ExtendedClientConfiguration()
 SqsClient client = new AmazonSQSExtendedClient(SqsClient.builder().build(), config);
 ```
 
-After (Kotlin):
+After (aws-sdk-kotlin):
 
 ```kotlin
 val client = SqsExtendedClient(
@@ -170,7 +159,7 @@ val client = SqsExtendedClient(
 
 Options without an equivalent:
 
-| Java option | In the ports |
+| Java option | In the Kotlin clients |
 |---|---|
 | Client-side encryption (`ServerSideEncryptionStrategy`) | Configure SSE-S3 or SSE-KMS on the bucket |
 | `ObjectCannedACL` | Use bucket policies |
@@ -197,9 +186,9 @@ reimplementation that takes no code from `payload-offloading-java-common-lib-for
 
 ## Try it
 
-- s3overflow: <https://github.com/christoph-sens/s3overflow>
 - sqsoverflow: <https://github.com/christoph-sens/sqsoverflow>
 - snsoverflow: <https://github.com/christoph-sens/snsoverflow>
+- s3overflow: <https://github.com/christoph-sens/s3overflow>
 
 Issues and pull requests are welcome. If you run into a case the libraries don't cover yet, such as
 another AWS service that could use the same pattern, open an issue.
