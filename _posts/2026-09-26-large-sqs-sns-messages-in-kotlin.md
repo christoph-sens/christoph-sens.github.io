@@ -6,6 +6,10 @@ tags: [kotlin, aws, sqs, sns, s3, coroutines]
 image: /assets/images/overflow-social-preview.png
 ---
 
+*Update, October 2026: since version 2.0.0, sqsoverflow and snsoverflow are wire-compatible with the
+AWS Java libraries, and a dynamic proxy replaces the interface delegation described in the first
+version of this post. Both sections below are updated.*
+
 Every SQS queue and SNS topic has a message size limit. When a payload is larger, the usual answer
 is the *claim check* pattern: put the payload in S3, send a small pointer instead, and resolve the
 pointer on the receiving side. AWS ships this pattern as two Java libraries,
@@ -23,7 +27,7 @@ Maven Central:
 - [snsoverflow](https://github.com/christoph-sens/snsoverflow): an `SnsClient` that offloads large message bodies
 - [s3overflow](https://github.com/christoph-sens/s3overflow): the payload store underneath (S3 upload, pointer, download, delete)
 
-This post covers how they work and how they differ from the Java libraries.
+This post covers how they work, how they differ from the Java libraries, and how they work together with them.
 
 ## What the size limits are today
 
@@ -80,27 +84,32 @@ The Java libraries come in two flavors each, for example `AmazonSQSExtendedClien
 and `AmazonSQSExtendedAsyncClient` for `SqsAsyncClient`. aws-sdk-kotlin clients are `suspend`-based
 from the start, so one class covers both cases and fits naturally into coroutine code.
 
-### Interface delegation replaces a thousand lines of pass-through code
+### A proxy replaces a thousand lines of pass-through code
 
 Most of the SQS interface has nothing to do with payload offloading: `createQueue`, `listQueues`,
 `tagQueue` and dozens more. The Java library forwards each of these by hand in a base class of
-roughly 1,150 lines. Kotlin's interface delegation does this in one line:
+roughly 1,150 lines.
+
+The first version of sqsoverflow used Kotlin's interface delegation for this, `SqsClient by sqsClient`:
+one line instead of a thousand. It has a catch for a library, though. The compiler generates the
+forwarding methods when *the library* is built, against one aws-sdk-kotlin version. The SDK's client
+operations are abstract on the JVM, so if an application upgrades aws-sdk-kotlin to a version that adds
+an SQS operation, the compiled class doesn't have it, and calling it fails with `AbstractMethodError`.
+
+So `SqsExtendedClient(...)` now returns a `java.lang.reflect.Proxy` for the `SqsClient` interface
+that is on the classpath at runtime:
 
 ```kotlin
-class SqsExtendedClient(
-    private val sqsClient: SqsClient,
-    private val clientConfig: SqsExtendedClientConfig,
-) : SqsClient by sqsClient {
-    override suspend fun sendMessage(input: SendMessageRequest): SendMessageResponse { /* offload if needed */ }
-    // ... only the methods with real offload logic are overridden
-}
+fun SqsExtendedClient(sqsClient: SqsClient, clientConfig: SqsExtendedClientConfig): SqsClient =
+    offloadingProxy(OffloadingSqsClient(sqsClient, clientConfig), sqsClient, OFFLOADED_OPERATIONS)
 ```
 
-sqsoverflow overrides eight methods: `sendMessage`, `sendMessageBatch`, `receiveMessage`,
+The eight operations that touch payloads (`sendMessage`, `sendMessageBatch`, `receiveMessage`,
 `deleteMessage`, `deleteMessageBatch`, `changeMessageVisibility`, `changeMessageVisibilityBatch` and
-`purgeQueue`. snsoverflow overrides two: `publish` and `publishBatch`. Everything else is delegated
-to the wrapped client. All three libraries together are about 730 lines of Kotlin, license headers
-included.
+`purgeQueue`) go to the offloading implementation; every other call goes straight to the wrapped
+client, including operations the SDK adds later. Suspend functions need no special handling: to the
+proxy, the `Continuation` is just one more argument. snsoverflow does the same for `publish` and
+`publishBatch`. All three libraries together are about 1,060 lines of Kotlin, license headers included.
 
 ### Less configuration surface
 
@@ -126,19 +135,24 @@ Jackson. Fewer transitive dependencies means fewer libraries to keep patched. De
 remaining dependencies current, and CodeQL and dependency review run on every pull request in all
 three repositories.
 
-## Differences from the Java libraries
+## Working together with the Java libraries
 
-For Java services, the AWS libraries remain the natural choice. If you compare the two, or run a
-Kotlin service that uses the Java libraries through the Java SDK today, these are the differences
-that matter.
+For Java services, the AWS libraries remain the natural choice. The Kotlin clients are built to sit
+next to them: since 2.0.0, Java and Kotlin producers and consumers can share a queue or topic, in both
+directions.
 
-**sqsoverflow and snsoverflow are not wire-compatible with the Java libraries.** The pointer JSON
-and the receipt-handle format differ. A message sent by the Java extended client cannot be resolved
-by sqsoverflow, and vice versa, so all producers and consumers of a queue or topic have to use the
-same libraries. Switching means switching all of them at once, or draining the queue first.
+That took two details. The Java libraries serialize the pointer with Jackson's default typing, which
+wraps it in a type id, `["software.amazon.payloadoffloading.PayloadS3Pointer",{"s3BucketName":"...","s3Key":"..."}]`,
+and Jackson also *requires* that wrapper when reading. s3overflow now writes exactly this format with
+kotlinx.serialization and still reads the plain object of its 1.x versions. And the Java SQS client
+flags offloaded messages with the legacy attribute `SQSLargePayloadSize` by default, not with
+`ExtendedPayloadSize`; sqsoverflow recognizes both and writes `ExtendedPayloadSize`, which the Java
+library reads as well. The tests check the pointer byte for byte against one produced by the Java
+library, and the integration tests resolve a message the way the Java library sends it.
 
-The `ExtendedPayloadSize` attribute name is the same, so SNS-to-SQS fan-out works between
-snsoverflow and sqsoverflow.
+So a Kotlin service can join a queue that Java services already use, or replace one of them, without
+switching everything at once. Coming from 1.x of the Kotlin clients, upgrade the consumers first:
+1.x cannot read the new pointer format.
 
 Options without a direct equivalent:
 
@@ -147,7 +161,7 @@ Options without a direct equivalent:
 | Client-side encryption (`ServerSideEncryptionStrategy`) | Configure SSE-S3 or SSE-KMS on the bucket |
 | `ObjectCannedACL` | Use bucket policies |
 | SNS per-message `"S3Key"` attribute | Use `s3KeyPrefix` in the config |
-| Legacy `SQSLargePayloadSize` attribute name | Always `ExtendedPayloadSize` |
+| Legacy `SQSLargePayloadSize` attribute name | Recognized on receive; writes `ExtendedPayloadSize` |
 
 ## Verifying what you download
 
