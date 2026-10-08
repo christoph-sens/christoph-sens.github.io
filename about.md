@@ -12,4 +12,5 @@ single-page apps, CI/CD pipelines, and step-by-step migrations without a big ban
 - GitHub: [christoph-sens](https://github.com/christoph-sens)
 - Open source: [s3overflow](https://github.com/christoph-sens/s3overflow) ·
   [sqsoverflow](https://github.com/christoph-sens/sqsoverflow) ·
-  [snsoverflow](https://github.com/christoph-sens/snsoverflow)
+  [snsoverflow](https://github.com/christoph-sens/snsoverflow) ·
+  [Treetrail](https://github.com/treetrail/treetrail) (JSONPath for Java)
