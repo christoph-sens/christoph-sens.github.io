@@ -102,10 +102,8 @@ thought of. So besides the suite, which runs against every JSON model:
   exactly its node.
 - **Differential tests:** 20,000 random regular expressions against `java.util.regex`, and 2,000
   random queries against [jsonpath-rfc9535](https://github.com/jg-rp/python-jsonpath-rfc9535), a
-  Python implementation of the standard. Where the two disagreed, I checked the RFC. Treetrail was
-  right each time, and the reference had six small bugs, which I've
-  [reported upstream](https://github.com/jg-rp/python-jsonpath-rfc9535/issues?q=is%3Aissue%20author%3Achristoph-sens).
-  Having a careful second implementation to test against was a great help.
+  Python implementation of the standard. Having a careful second implementation to test against was a
+  great help.
 
 ## Try it
 
